@@ -200,12 +200,10 @@ class CropPredictionApp:
     def _is_non_soil_class(self, class_name):
         if not class_name:
             return False
-        key = class_name.lower()
-        return (
-            "non_soil" in key
-            or "nonsoil" in key
-            or "human" in key
-            or "person" in key
+
+        key = class_name.lower().replace("-", "_").replace(" ", "_")
+        non_soil_tokens = (
+            "non_soil", "nonsoil", "not_soil", "human", "person", "face", "body"
         )
 
     def show_crop_info(self, class_id):
@@ -278,6 +276,11 @@ class CropPredictionApp:
 
             # Block prediction for explicit non-soil/human class labels.
             if self._is_non_soil_class(class_name):
+                self._show_non_soil_warning(confidence=conf)
+                return
+
+            # If model mapping exists and class is not recognized as soil, treat as non-soil.
+            if class_name and not self._is_known_soil_class(class_name):
                 self._show_non_soil_warning(confidence=conf)
                 return
 
