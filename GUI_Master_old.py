@@ -222,6 +222,40 @@ class CropPredictionApp:
         }
         return normalized in known_aliases
 
+    def _heuristic_non_soil_check(self, image_path):
+        """Image-level non-soil detector for obvious human/non-soil uploads."""
+        img = cv2.imread(image_path)
+        if img is None:
+            return False, ""
+
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        # 1) Face detection: strongest indicator of non-soil human image.
+        try:
+            cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+            face_cascade = cv2.CascadeClassifier(cascade_path)
+            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40))
+            if len(faces) > 0:
+                return True, "face-like object detected"
+        except Exception:
+            pass
+
+        # 2) Skin-color ratio (YCrCb) to catch portrait-style photos when face detector misses.
+        ycrcb = cv2.cvtColor(img, cv2.COLOR_BGR2YCrCb)
+        lower_skin = np.array([0, 133, 77], dtype=np.uint8)
+        upper_skin = np.array([255, 173, 127], dtype=np.uint8)
+        skin_mask = cv2.inRange(ycrcb, lower_skin, upper_skin)
+        skin_ratio = float(np.count_nonzero(skin_mask)) / float(skin_mask.size)
+        if skin_ratio > 0.12:
+            return True, "human-skin color region detected"
+
+        # 3) Very low texture image rejection (plain objects/backgrounds).
+        texture_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+        if texture_var < 35.0:
+            return True, "very low texture image"
+
+        return False, ""
+
     def show_crop_info(self, class_id):
         rec = self.SOIL_RECO.get(class_id, None)
         if rec:
@@ -290,13 +324,12 @@ class CropPredictionApp:
             class_map = self._load_class_mapping()
             class_name = class_map.get(class_id, "")
 
-            # Extra guard for legacy models without class mapping.
-            if not class_map:
-                is_non_soil, reason = self._heuristic_non_soil_check(self.fn)
-                if is_non_soil:
-                    self._show_non_soil_warning(confidence=conf)
-                    self.update_label(f"Prediction blocked: Non-soil image detected ({reason})")
-                    return
+            # Always run image-level non-soil guard first.
+            is_non_soil, reason = self._heuristic_non_soil_check(self.fn)
+            if is_non_soil:
+                self._show_non_soil_warning(confidence=conf)
+                self.update_label(f"Prediction blocked: Non-soil image detected ({reason})")
+                return
 
             # Block prediction for explicit non-soil/human class labels.
             if self._is_non_soil_class(class_name):
