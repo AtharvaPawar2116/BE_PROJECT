@@ -9,8 +9,6 @@ import os
 import json
 from datetime import datetime
 import threading
-import subprocess
-import sys
 
 # Note: Ensure CNNModel.py is in the same directory
 # import CNNModel 
@@ -117,17 +115,14 @@ class CropPredictionApp:
         return canvas
 
     def _fit_image_to_slot(self, pil_img):
-        img = pil_img.convert("RGB")
+        img = pil_img.copy()
+        img.thumbnail((self.slot_width, self.slot_height), Image.LANCZOS)
 
-        scale = max(self.slot_width / img.width, self.slot_height / img.height)
-        new_size = (int(img.width * scale), int(img.height * scale))
-        resized = img.resize(new_size, Image.LANCZOS)
-
-        left = (resized.width - self.slot_width) // 2
-        top = (resized.height - self.slot_height) // 2
-        right = left + self.slot_width
-        bottom = top + self.slot_height
-        return resized.crop((left, top, right, bottom))
+        fitted = Image.new("RGB", (self.slot_width, self.slot_height), "#ecf0f1")
+        x = (self.slot_width - img.width) // 2
+        y = (self.slot_height - img.height) // 2
+        fitted.paste(img, (x, y))
+        return fitted
 
     def _show_image_on_slot(self, slot_canvas, pil_img):
         fitted = self._fit_image_to_slot(pil_img)
@@ -210,18 +205,6 @@ class CropPredictionApp:
         non_soil_tokens = (
             "non_soil", "nonsoil", "not_soil", "human", "person", "face", "body"
         )
-        return any(token in key for token in non_soil_tokens)
-
-    def _is_known_soil_class(self, class_name):
-        if not class_name:
-            return False
-
-        key = class_name.lower().replace("-", " ").replace("_", " ")
-        soil_tokens = (
-            "black soil", "alluvial", "laterite", "yellow soil", "sandy soil",
-            "black", "yellow", "sandy"
-        )
-        return any(token in key for token in soil_tokens)
 
     def show_crop_info(self, class_id):
         rec = self.SOIL_RECO.get(class_id, None)
@@ -322,19 +305,8 @@ class CropPredictionApp:
         call(["python", "check_predict.py"])
         
     def chatbot(self):
-        script = os.path.join(os.path.dirname(__file__), "chatbot  API key.py")
-        if not os.path.exists(script):
-            messagebox.showerror(
-                "File Missing",
-                "Chatbot script not found: chatbot  API key.py"
-            )
-            return
-
-        try:
-            subprocess.Popen([sys.executable, script], cwd=os.path.dirname(script))
-            self.update_label("Chatbot window opened")
-        except Exception as e:
-            messagebox.showerror("Chatbot Launch Error", str(e))
+        from subprocess import call
+        call(["python", "chatbot API key.py"])
 
 if __name__ == "__main__":
     root = tk.Tk()
