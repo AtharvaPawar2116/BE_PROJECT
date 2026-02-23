@@ -9,6 +9,8 @@ import os
 import json
 from datetime import datetime
 import threading
+import subprocess
+import sys
 
 # Note: Ensure CNNModel.py is in the same directory
 # import CNNModel 
@@ -34,6 +36,8 @@ class CropPredictionApp:
         self.model_path = "dataset/soil_model_cnn.h5"
         self.class_index_path = "dataset/class_indices.json"
         self.non_soil_threshold = 65.0
+        self.slot_width = 340
+        self.slot_height = 260
         
         # --- UI SETUP ---
         self.setup_sidebar()
@@ -99,9 +103,38 @@ class CropPredictionApp:
         frame = tk.Frame(parent, bg="white", padx=10, pady=10)
         frame.grid(row=0, column=col)
         tk.Label(frame, text=text, font=("Arial", 11, "bold"), bg="white", fg="grey").pack(pady=(0, 8))
-        lbl = tk.Label(frame, bg="#ecf0f1", width=35, height=15, relief="ridge", bd=1)
-        lbl.pack()
-        return lbl
+
+        canvas = tk.Canvas(
+            frame,
+            bg="#ecf0f1",
+            width=self.slot_width,
+            height=self.slot_height,
+            relief="ridge",
+            bd=1,
+            highlightthickness=0
+        )
+        canvas.pack()
+        return canvas
+
+    def _fit_image_to_slot(self, pil_img):
+        img = pil_img.convert("RGB")
+
+        scale = max(self.slot_width / img.width, self.slot_height / img.height)
+        new_size = (int(img.width * scale), int(img.height * scale))
+        resized = img.resize(new_size, Image.LANCZOS)
+
+        left = (resized.width - self.slot_width) // 2
+        top = (resized.height - self.slot_height) // 2
+        right = left + self.slot_width
+        bottom = top + self.slot_height
+        return resized.crop((left, top, right, bottom))
+
+    def _show_image_on_slot(self, slot_canvas, pil_img):
+        fitted = self._fit_image_to_slot(pil_img)
+        imgtk = ImageTk.PhotoImage(fitted)
+        slot_canvas.delete("all")
+        slot_canvas.create_image(0, 0, anchor="nw", image=imgtk)
+        slot_canvas.image = imgtk
 
     # =========================================================
     # YOUR ORIGINAL LOGIC (Unchanged, just method-wrapped)
@@ -172,13 +205,23 @@ class CropPredictionApp:
     def _is_non_soil_class(self, class_name):
         if not class_name:
             return False
-        key = class_name.lower()
-        return (
-            "non_soil" in key
-            or "nonsoil" in key
-            or "human" in key
-            or "person" in key
+
+        key = class_name.lower().replace("-", "_").replace(" ", "_")
+        non_soil_tokens = (
+            "non_soil", "nonsoil", "not_soil", "human", "person", "face", "body"
         )
+        return any(token in key for token in non_soil_tokens)
+
+    def _is_known_soil_class(self, class_name):
+        if not class_name:
+            return False
+
+        key = class_name.lower().replace("-", " ").replace("_", " ")
+        soil_tokens = (
+            "black soil", "alluvial", "laterite", "yellow soil", "sandy soil",
+            "black", "yellow", "sandy"
+        )
+        return any(token in key for token in soil_tokens)
 
     def show_crop_info(self, class_id):
         rec = self.SOIL_RECO.get(class_id, None)
@@ -189,10 +232,8 @@ class CropPredictionApp:
         fileName = askopenfilename(initialdir='D:/', title='Select image', filetypes=[("all files", "*.*")])
         if fileName:
             self.fn = fileName
-            img = Image.open(self.fn).resize((300, 230))
-            imgtk = ImageTk.PhotoImage(img)
-            self.lbl_orig.config(image=imgtk)
-            self.lbl_orig.image = imgtk
+            img = Image.open(self.fn).convert("RGB")
+            self._show_image_on_slot(self.lbl_orig, img)
             self.crop_label.config(text="Image loaded. You can preprocess, train model, or run prediction.")
             self.update_label("Image loaded successfully")
 
@@ -202,14 +243,14 @@ class CropPredictionApp:
             return
         img_cv = cv2.imread(self.fn)
         gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
-        gray_disp = cv2.resize(gray, (300, 230))
-        
-        im_gray = ImageTk.PhotoImage(Image.fromarray(gray_disp))
-        self.lbl_gray.config(image=im_gray); self.lbl_gray.image = im_gray
-        
+        gray_disp = cv2.resize(gray, (self.slot_width, self.slot_height))
+
+        gray_img = Image.fromarray(gray_disp).convert("RGB")
+        self._show_image_on_slot(self.lbl_gray, gray_img)
+
         _, thresh = cv2.threshold(gray_disp, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        im_thresh = ImageTk.PhotoImage(Image.fromarray(thresh))
-        self.lbl_bin.config(image=im_thresh); self.lbl_bin.image = im_thresh
+        thresh_img = Image.fromarray(thresh).convert("RGB")
+        self._show_image_on_slot(self.lbl_bin, thresh_img)
         self.update_label("Pre-processing completed")
 
     def _run_training_job(self):
@@ -255,6 +296,11 @@ class CropPredictionApp:
                 self._show_non_soil_warning(confidence=conf)
                 return
 
+            # If model mapping exists and class is not recognized as soil, treat as non-soil.
+            if class_name and not self._is_known_soil_class(class_name):
+                self._show_non_soil_warning(confidence=conf)
+                return
+
             # Backward-safe fallback for legacy models without class mapping.
             if class_id not in self.SOIL_RECO or conf < self.non_soil_threshold:
                 self._show_non_soil_warning(confidence=conf)
@@ -276,8 +322,19 @@ class CropPredictionApp:
         call(["python", "check_predict.py"])
         
     def chatbot(self):
-        from subprocess import call
-        call(["python", "chatbot API key.py"])
+        script = os.path.join(os.path.dirname(__file__), "chatbot  API key.py")
+        if not os.path.exists(script):
+            messagebox.showerror(
+                "File Missing",
+                "Chatbot script not found: chatbot  API key.py"
+            )
+            return
+
+        try:
+            subprocess.Popen([sys.executable, script], cwd=os.path.dirname(script))
+            self.update_label("Chatbot window opened")
+        except Exception as e:
+            messagebox.showerror("Chatbot Launch Error", str(e))
 
 if __name__ == "__main__":
     root = tk.Tk()
