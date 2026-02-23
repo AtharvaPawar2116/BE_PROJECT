@@ -2,19 +2,23 @@ import tkinter as tk
 
 from tkinter import scrolledtext, messagebox
 from google import genai
+import os
 
 # ==============================
 # GEMINI CONFIG
 # ==============================
-GEMINI_API_KEY = ""
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = "gemini-2.5-flash"
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 # ==============================
 # GEMINI FARMER RESPONSE
 # ==============================
 def farmer_response(user_message: str) -> str:
+    if not GEMINI_API_KEY or client is None:
+        return "⚠️ Gemini API key missing. Set GEMINI_API_KEY environment variable and restart chatbot."
+
     try:
         detail = "short and simple" if var_short.get() else "detailed but easy to understand"
         reply_lang = "Marathi" if var_marathi.get() else "English"
@@ -47,10 +51,13 @@ User question:
             model=GEMINI_MODEL,
             contents=prompt
         )
-        return response.text.strip()
+        if getattr(response, "text", None):
+            return response.text.strip()
 
-    except Exception:
-        return "⚠️ Unable to connect to Farmer AI service right now. Please check internet/API key."
+        return "⚠️ I received an empty response from Gemini. Please try again."
+
+    except Exception as e:
+        return f"⚠️ Unable to connect to Farmer AI service right now: {e}"
 
 # ==============================
 # SEND MESSAGE

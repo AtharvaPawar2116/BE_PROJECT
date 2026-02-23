@@ -34,6 +34,8 @@ class CropPredictionApp:
         self.model_path = "dataset/soil_model_cnn.h5"
         self.class_index_path = "dataset/class_indices.json"
         self.non_soil_threshold = 65.0
+        self.slot_width = 340
+        self.slot_height = 260
         
         # --- UI SETUP ---
         self.setup_sidebar()
@@ -99,9 +101,35 @@ class CropPredictionApp:
         frame = tk.Frame(parent, bg="white", padx=10, pady=10)
         frame.grid(row=0, column=col)
         tk.Label(frame, text=text, font=("Arial", 11, "bold"), bg="white", fg="grey").pack(pady=(0, 8))
-        lbl = tk.Label(frame, bg="#ecf0f1", width=35, height=15, relief="ridge", bd=1)
-        lbl.pack()
-        return lbl
+
+        canvas = tk.Canvas(
+            frame,
+            bg="#ecf0f1",
+            width=self.slot_width,
+            height=self.slot_height,
+            relief="ridge",
+            bd=1,
+            highlightthickness=0
+        )
+        canvas.pack()
+        return canvas
+
+    def _fit_image_to_slot(self, pil_img):
+        img = pil_img.copy()
+        img.thumbnail((self.slot_width, self.slot_height), Image.LANCZOS)
+
+        fitted = Image.new("RGB", (self.slot_width, self.slot_height), "#ecf0f1")
+        x = (self.slot_width - img.width) // 2
+        y = (self.slot_height - img.height) // 2
+        fitted.paste(img, (x, y))
+        return fitted
+
+    def _show_image_on_slot(self, slot_canvas, pil_img):
+        fitted = self._fit_image_to_slot(pil_img)
+        imgtk = ImageTk.PhotoImage(fitted)
+        slot_canvas.delete("all")
+        slot_canvas.create_image(0, 0, anchor="nw", image=imgtk)
+        slot_canvas.image = imgtk
 
     # =========================================================
     # YOUR ORIGINAL LOGIC (Unchanged, just method-wrapped)
@@ -189,10 +217,8 @@ class CropPredictionApp:
         fileName = askopenfilename(initialdir='D:/', title='Select image', filetypes=[("all files", "*.*")])
         if fileName:
             self.fn = fileName
-            img = Image.open(self.fn).resize((300, 230))
-            imgtk = ImageTk.PhotoImage(img)
-            self.lbl_orig.config(image=imgtk)
-            self.lbl_orig.image = imgtk
+            img = Image.open(self.fn).convert("RGB")
+            self._show_image_on_slot(self.lbl_orig, img)
             self.crop_label.config(text="Image loaded. You can preprocess, train model, or run prediction.")
             self.update_label("Image loaded successfully")
 
@@ -202,14 +228,14 @@ class CropPredictionApp:
             return
         img_cv = cv2.imread(self.fn)
         gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
-        gray_disp = cv2.resize(gray, (300, 230))
-        
-        im_gray = ImageTk.PhotoImage(Image.fromarray(gray_disp))
-        self.lbl_gray.config(image=im_gray); self.lbl_gray.image = im_gray
-        
+        gray_disp = cv2.resize(gray, (self.slot_width, self.slot_height))
+
+        gray_img = Image.fromarray(gray_disp).convert("RGB")
+        self._show_image_on_slot(self.lbl_gray, gray_img)
+
         _, thresh = cv2.threshold(gray_disp, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        im_thresh = ImageTk.PhotoImage(Image.fromarray(thresh))
-        self.lbl_bin.config(image=im_thresh); self.lbl_bin.image = im_thresh
+        thresh_img = Image.fromarray(thresh).convert("RGB")
+        self._show_image_on_slot(self.lbl_bin, thresh_img)
         self.update_label("Pre-processing completed")
 
     def _run_training_job(self):
@@ -277,7 +303,7 @@ class CropPredictionApp:
         
     def chatbot(self):
         from subprocess import call
-        call(["python", "chatbot API key.py"])
+        call(["python", "chatbot  API key.py"])
 
 if __name__ == "__main__":
     root = tk.Tk()
