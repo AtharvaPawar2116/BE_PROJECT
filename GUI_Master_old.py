@@ -303,16 +303,7 @@ class CropPredictionApp:
         
     def chatbot(self):
         from subprocess import call
-
-        script = os.path.join(os.path.dirname(__file__), "chatbot  API key.py")
-        if not os.path.exists(script):
-            messagebox.showerror(
-                "File Missing",
-                "Chatbot script not found: chatbot  API key.py"
-            )
-            return
-
-        call(["python", script])
+        call(["python", "chatbot API key.py"])
 
 if __name__ == "__main__":
     root = tk.Tk()
