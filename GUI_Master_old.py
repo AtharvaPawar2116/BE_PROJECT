@@ -205,6 +205,73 @@ class CropPredictionApp:
         non_soil_tokens = (
             "non_soil", "nonsoil", "not_soil", "human", "person", "face", "body"
         )
+        return any(token in key for token in non_soil_tokens)
+
+    def _is_known_soil_class(self, class_name):
+        """Check whether predicted class label maps to one of the supported soil types."""
+        if not class_name:
+            return False
+
+        normalized = class_name.lower().replace("-", " ").replace("_", " ").strip()
+        known_aliases = {
+            "black soil", "black", "kali mati",
+            "alluvial soil", "alluvial", "gaalachi mati",
+            "laterite soil", "laterite",
+            "yellow soil", "yellow",
+            "sandy soil", "sandy",
+        }
+        return normalized in known_aliases
+
+    def _load_cascade(self, filename):
+        """Load OpenCV haar cascade safely."""
+        try:
+            path = cv2.data.haarcascades + filename
+            cascade = cv2.CascadeClassifier(path)
+            return cascade if not cascade.empty() else None
+        except Exception:
+            return None
+
+    def _heuristic_non_soil_check(self, image_path):
+        """Human-feature based non-soil detector to avoid soil-color false positives."""
+        img = cv2.imread(image_path)
+        if img is None:
+            return False, ""
+
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        # 1) Face detection (primary human indicator).
+        face_cascade = self._load_cascade("haarcascade_frontalface_default.xml")
+        if face_cascade is not None:
+            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40))
+            if len(faces) > 0:
+                # 2) Validate face with eyes/smile when possible (reduces false positives).
+                eye_cascade = self._load_cascade("haarcascade_eye.xml")
+                smile_cascade = self._load_cascade("haarcascade_smile.xml")
+                for (x, y, w, h) in faces:
+                    roi = gray[y:y + h, x:x + w]
+                    eye_hits = 0
+                    smile_hits = 0
+                    if eye_cascade is not None:
+                        eyes = eye_cascade.detectMultiScale(roi, scaleFactor=1.1, minNeighbors=5, minSize=(12, 12))
+                        eye_hits = len(eyes)
+                    if smile_cascade is not None:
+                        smiles = smile_cascade.detectMultiScale(roi, scaleFactor=1.7, minNeighbors=20, minSize=(20, 20))
+                        smile_hits = len(smiles)
+
+                    # Strong human evidence.
+                    if eye_hits >= 1 or smile_hits >= 1:
+                        return True, "human facial features detected"
+
+                # If validation cascades are unavailable, still trust face detection.
+                if eye_cascade is None and smile_cascade is None:
+                    return True, "face-like object detected"
+
+        # 3) Keep only conservative low-texture rejection for obviously plain/non-soil images.
+        texture_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+        if texture_var < 18.0:
+            return True, "very low texture image"
+
+        return False, ""
 
     def show_crop_info(self, class_id):
         rec = self.SOIL_RECO.get(class_id, None)
@@ -274,6 +341,15 @@ class CropPredictionApp:
             class_map = self._load_class_mapping()
             class_name = class_map.get(class_id, "")
 
+            # Run heuristic guard only when model mapping is unavailable.
+            # This prevents false blocking on valid soil photos.
+            if not class_map:
+                is_non_soil, reason = self._heuristic_non_soil_check(self.fn)
+                if is_non_soil:
+                    self._show_non_soil_warning(confidence=conf)
+                    self.update_label(f"Prediction blocked: Non-soil image detected ({reason})")
+                    return
+
             # Block prediction for explicit non-soil/human class labels.
             if self._is_non_soil_class(class_name):
                 self._show_non_soil_warning(confidence=conf)
@@ -284,7 +360,7 @@ class CropPredictionApp:
                 self._show_non_soil_warning(confidence=conf)
                 return
 
-            # Backward-safe fallback for legacy models without class mapping.
+            # Safety fallback for unsupported classes or weak confidence.
             if class_id not in self.SOIL_RECO or conf < self.non_soil_threshold:
                 self._show_non_soil_warning(confidence=conf)
                 return
