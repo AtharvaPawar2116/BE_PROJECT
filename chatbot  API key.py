@@ -6,7 +6,7 @@ from google import genai
 # ==============================
 # GEMINI CONFIG
 # ==============================
-GEMINI_API_KEY = "AIzaSyDO0M72ow_vY_FL_JS5oFS-yIfrkIxK1DM"
+GEMINI_API_KEY = ""
 GEMINI_MODEL = "gemini-2.5-flash"
 
 client = genai.Client(api_key=GEMINI_API_KEY)
@@ -219,3 +219,4 @@ welcome_message()
 # RUN APP
 # ==============================
 root.mainloop()
+
