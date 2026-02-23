@@ -205,6 +205,22 @@ class CropPredictionApp:
         non_soil_tokens = (
             "non_soil", "nonsoil", "not_soil", "human", "person", "face", "body"
         )
+        return any(token in key for token in non_soil_tokens)
+
+    def _is_known_soil_class(self, class_name):
+        """Check whether predicted class label maps to one of the supported soil types."""
+        if not class_name:
+            return False
+
+        normalized = class_name.lower().replace("-", " ").replace("_", " ").strip()
+        known_aliases = {
+            "black soil", "black", "kali mati",
+            "alluvial soil", "alluvial", "gaalachi mati",
+            "laterite soil", "laterite",
+            "yellow soil", "yellow",
+            "sandy soil", "sandy",
+        }
+        return normalized in known_aliases
 
     def show_crop_info(self, class_id):
         rec = self.SOIL_RECO.get(class_id, None)
