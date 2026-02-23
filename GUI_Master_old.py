@@ -6,7 +6,9 @@ import cv2
 import numpy as np
 import time
 import os
+import json
 from datetime import datetime
+import threading
 
 # Note: Ensure CNNModel.py is in the same directory
 # import CNNModel 
@@ -18,6 +20,7 @@ BG_COLOR = "#f4f7f6"
 SIDEBAR_COLOR = "#2c3e50"
 ACCENT_COLOR = "#27ae60"
 TEXT_COLOR = "#2c3e50"
+CARD_COLOR = "#ffffff"
 
 class CropPredictionApp:
     def __init__(self, root):
@@ -28,6 +31,9 @@ class CropPredictionApp:
         self.root.title("Soil Based - Crop Prediction System")
 
         self.fn = ""
+        self.model_path = "dataset/soil_model_cnn.h5"
+        self.class_index_path = "dataset/class_indices.json"
+        self.non_soil_threshold = 65.0
         
         # --- UI SETUP ---
         self.setup_sidebar()
@@ -50,6 +56,7 @@ class CropPredictionApp:
 
         tk.Button(sidebar, text="Select Image", command=self.openimage, **btn_style).pack(fill="x", padx=20, pady=5)
         tk.Button(sidebar, text="Pre-Process", command=self.convert_grey, **btn_style).pack(fill="x", padx=20, pady=5)
+        tk.Button(sidebar, text="Train CNN Model", command=self.train_cnn_model, **btn_style).pack(fill="x", padx=20, pady=5)
         tk.Button(sidebar, text="CNN Prediction", command=self.test_model, **btn_style).pack(fill="x", padx=20, pady=5)
         tk.Button(sidebar, text="SVM Prediction", command=self.svm_predication, **btn_style).pack(fill="x", padx=20, pady=5)
         tk.Button(sidebar, text="AI Chatbot", command=self.chatbot, **btn_style).pack(fill="x", padx=20, pady=5)
@@ -67,7 +74,7 @@ class CropPredictionApp:
         header.pack(anchor="nw", pady=(0, 20))
 
         # Image Display Container
-        self.img_container = tk.Frame(self.main_frame, bg="white", relief="flat", bd=2)
+        self.img_container = tk.Frame(self.main_frame, bg=CARD_COLOR, relief="groove", bd=1)
         self.img_container.pack(fill="x")
 
         self.lbl_orig = self.create_img_slot(self.img_container, "Input Soil Image", 0)
@@ -75,8 +82,8 @@ class CropPredictionApp:
         self.lbl_bin = self.create_img_slot(self.img_container, "Binary/Otsu", 2)
 
         # Status Bar
-        self.status_label = tk.Label(self.main_frame, text="Ready: Please upload an image", 
-                                     font=('Arial', 14, 'italic'), bg="#f1c40f", fg="black", height=2)
+        self.status_label = tk.Label(self.main_frame, text="Ready: Please upload a soil image", 
+                                     font=('Arial', 13, 'italic'), bg="#f1c40f", fg="black", height=2)
         self.status_label.pack(fill="x", pady=20)
 
         # Recommendation Display Area
@@ -91,8 +98,8 @@ class CropPredictionApp:
     def create_img_slot(self, parent, text, col):
         frame = tk.Frame(parent, bg="white", padx=10, pady=10)
         frame.grid(row=0, column=col)
-        tk.Label(frame, text=text, font=("Arial", 10, "bold"), bg="white", fg="grey").pack()
-        lbl = tk.Label(frame, bg="#ecf0f1", width=35, height=15)
+        tk.Label(frame, text=text, font=("Arial", 11, "bold"), bg="white", fg="grey").pack(pady=(0, 8))
+        lbl = tk.Label(frame, bg="#ecf0f1", width=35, height=15, relief="ridge", bd=1)
         lbl.pack()
         return lbl
 
@@ -140,6 +147,39 @@ class CropPredictionApp:
     def update_label(self, str_T):
         self.status_label.config(text=str_T)
 
+    def _show_non_soil_warning(self, confidence=None):
+        conf_text = f" (confidence: {confidence:.2f}%)" if confidence is not None else ""
+        self.crop_label.config(
+            text=(
+                "⚠️ Non-soil image detected.\n"
+                "The selected image appears to be a human/non-soil object.\n"
+                "Please upload a clear soil image for crop recommendations."
+            )
+        )
+        self.update_label(f"Prediction blocked: Non-soil image detected{conf_text}")
+
+    def _load_class_mapping(self):
+        """Return index->class_name mapping saved during training."""
+        if not os.path.exists(self.class_index_path):
+            return {}
+        try:
+            with open(self.class_index_path, "r", encoding="utf-8") as fp:
+                raw = json.load(fp)
+            return {int(v): k for k, v in raw.items()}
+        except Exception:
+            return {}
+
+    def _is_non_soil_class(self, class_name):
+        if not class_name:
+            return False
+        key = class_name.lower()
+        return (
+            "non_soil" in key
+            or "nonsoil" in key
+            or "human" in key
+            or "person" in key
+        )
+
     def show_crop_info(self, class_id):
         rec = self.SOIL_RECO.get(class_id, None)
         if rec:
@@ -153,10 +193,13 @@ class CropPredictionApp:
             imgtk = ImageTk.PhotoImage(img)
             self.lbl_orig.config(image=imgtk)
             self.lbl_orig.image = imgtk
-            self.update_label("Image Loaded Successfully")
+            self.crop_label.config(text="Image loaded. You can preprocess, train model, or run prediction.")
+            self.update_label("Image loaded successfully")
 
     def convert_grey(self):
-        if not self.fn: return
+        if not self.fn:
+            self.update_label("Please select image first")
+            return
         img_cv = cv2.imread(self.fn)
         gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
         gray_disp = cv2.resize(gray, (300, 230))
@@ -167,6 +210,28 @@ class CropPredictionApp:
         _, thresh = cv2.threshold(gray_disp, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         im_thresh = ImageTk.PhotoImage(Image.fromarray(thresh))
         self.lbl_bin.config(image=im_thresh); self.lbl_bin.image = im_thresh
+        self.update_label("Pre-processing completed")
+
+    def _run_training_job(self):
+        try:
+            from CNNModel import main as train_main
+            msg = train_main()
+            self.update_label("Training completed")
+            messagebox.showinfo("Training Done", msg)
+        except Exception as e:
+            self.update_label("Training failed")
+            messagebox.showerror("Training Error", str(e))
+
+    def train_cnn_model(self):
+        self.update_label("Training started... this may take time")
+        self.crop_label.config(
+            text=(
+                "Training in progress...\n"
+                "Tip: Keep dataset folders organized as train/test with class subfolders.\n"
+                "Include a `non_soil_human` class to avoid wrong soil prediction on human images."
+            )
+        )
+        threading.Thread(target=self._run_training_job, daemon=True).start()
 
     def test_model(self):
         if self.fn == "":
@@ -175,16 +240,30 @@ class CropPredictionApp:
         
         from tensorflow.keras.models import load_model
         try:
-            model = load_model('soil_model_cnn.h5', compile=False)
+            model_file = self.model_path if os.path.exists(self.model_path) else "soil_model_cnn.h5"
+            model = load_model(model_file, compile=False)
             img = Image.open(self.fn).resize((100, 100))
             img_arr = np.array(img).reshape(1, 100, 100, 3).astype('float32') / 255.0
             prediction = model.predict(img_arr)
             class_id = int(np.argmax(prediction))
             conf = float(np.max(prediction)) * 100.0
+            class_map = self._load_class_mapping()
+            class_name = class_map.get(class_id, "")
+
+            # Block prediction for explicit non-soil/human class labels.
+            if self._is_non_soil_class(class_name):
+                self._show_non_soil_warning(confidence=conf)
+                return
+
+            # Backward-safe fallback for legacy models without class mapping.
+            if class_id not in self.SOIL_RECO or conf < self.non_soil_threshold:
+                self._show_non_soil_warning(confidence=conf)
+                return
 
             self.show_crop_info(class_id)
             soil_name = self.SOIL_RECO[class_id]['soil_mar']
-            self.update_label(f"Soil Identified: {soil_name} ({conf:.2f}%)")
+            extra = f" | Class: {class_name}" if class_name else ""
+            self.update_label(f"Soil Identified: {soil_name} ({conf:.2f}%){extra}")
             
             report = self.build_report_text(self.fn, class_id, conf)
             path = self.write_report_to_file(report, self.fn)
