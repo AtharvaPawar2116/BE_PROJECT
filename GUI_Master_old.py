@@ -222,31 +222,6 @@ class CropPredictionApp:
         }
         return normalized in known_aliases
 
-    def _heuristic_non_soil_check(self, image_path):
-        """Fallback check for human/non-soil images when class mapping is missing."""
-        img = cv2.imread(image_path)
-        if img is None:
-            return False, ""
-
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-        # 1) Face detection: strong signal that image is not soil.
-        try:
-            cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-            face_cascade = cv2.CascadeClassifier(cascade_path)
-            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40))
-            if len(faces) > 0:
-                return True, "face-like object detected"
-        except Exception:
-            pass
-
-        # 2) Extremely low texture images are unlikely to be usable soil samples.
-        texture_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-        if texture_var < 35.0:
-            return True, "very low texture image"
-
-        return False, ""
-
     def show_crop_info(self, class_id):
         rec = self.SOIL_RECO.get(class_id, None)
         if rec:
@@ -317,31 +292,7 @@ class CropPredictionApp:
 
             # Extra guard for legacy models without class mapping.
             if not class_map:
-                img_cv = cv2.imread(self.fn)
-                if img_cv is None:
-                    is_non_soil, reason = False, ""
-                else:
-                    gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
-
-                    # Face detection + low-texture guard for obvious non-soil uploads.
-                    reason = ""
-                    is_non_soil = False
-                    try:
-                        cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-                        face_cascade = cv2.CascadeClassifier(cascade_path)
-                        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40))
-                        if len(faces) > 0:
-                            is_non_soil = True
-                            reason = "face-like object detected"
-                    except Exception:
-                        pass
-
-                    if not is_non_soil:
-                        texture_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-                        if texture_var < 35.0:
-                            is_non_soil = True
-                            reason = "very low texture image"
-
+                is_non_soil, reason = self._heuristic_non_soil_check(self.fn)
                 if is_non_soil:
                     self._show_non_soil_warning(confidence=conf)
                     self.update_label(f"Prediction blocked: Non-soil image detected ({reason})")
