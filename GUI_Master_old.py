@@ -290,6 +290,14 @@ class CropPredictionApp:
             class_map = self._load_class_mapping()
             class_name = class_map.get(class_id, "")
 
+            # Extra guard for legacy models without class mapping.
+            if not class_map:
+                is_non_soil, reason = self._heuristic_non_soil_check(self.fn)
+                if is_non_soil:
+                    self._show_non_soil_warning(confidence=conf)
+                    self.update_label(f"Prediction blocked: Non-soil image detected ({reason})")
+                    return
+
             # Block prediction for explicit non-soil/human class labels.
             if self._is_non_soil_class(class_name):
                 self._show_non_soil_warning(confidence=conf)
@@ -300,7 +308,7 @@ class CropPredictionApp:
                 self._show_non_soil_warning(confidence=conf)
                 return
 
-            # Backward-safe fallback for legacy models without class mapping.
+            # Safety fallback for unsupported classes or weak confidence.
             if class_id not in self.SOIL_RECO or conf < self.non_soil_threshold:
                 self._show_non_soil_warning(confidence=conf)
                 return
