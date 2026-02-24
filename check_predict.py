@@ -488,6 +488,7 @@ def update_talukas(*_):
     if talukas:
         taluka_cb["values"] = talukas
         taluka.set(talukas[0])
+        fetch_rainfall(silent=True)
     else:
         taluka_cb["values"] = ["तालुका मिळाला नाही"]
         taluka.set("तालुका मिळाला नाही")
@@ -504,18 +505,21 @@ def geocode_taluka(taluka_name, district_en):
     return float(payload[0]["lat"]), float(payload[0]["lon"])
 
 
-def fetch_temperature():
+def get_selected_location_coords():
     if state.get() != "महाराष्ट्र":
-        messagebox.showwarning("Location Missing", "सध्या तापमान auto-fill फक्त महाराष्ट्रासाठी उपलब्ध आहे.")
-        return
+        raise ValueError("सध्या auto-fill फक्त महाराष्ट्रासाठी उपलब्ध आहे.")
 
     district_en = DISTRICT_ENGLISH_MAP.get(district.get())
     if not district_en or taluka.get().endswith("नाही"):
-        messagebox.showwarning("Location Missing", "कृपया वैध जिल्हा आणि तालुका निवडा.")
-        return
+        raise ValueError("कृपया वैध जिल्हा आणि तालुका निवडा.")
 
+    lat, lon = geocode_taluka(taluka.get(), district_en)
+    return district_en, lat, lon
+
+
+def fetch_temperature():
     try:
-        lat, lon = geocode_taluka(taluka.get(), district_en)
+        _, lat, lon = get_selected_location_coords()
         url = (
             "https://api.open-meteo.com/v1/forecast"
             f"?latitude={lat}&longitude={lon}&current=temperature_2m"
@@ -528,8 +532,36 @@ def fetch_temperature():
             raise ValueError("Temperature not found")
         temperature.set(float(current_temp))
         result_label.config(text=f"{taluka.get()} साठी तापमान भरले: {current_temp}°C", bg="#f1f8e9", fg="#1b5e20")
-    except (URLError, ValueError, TimeoutError):
+    except ValueError as e:
+        messagebox.showwarning("Location Missing", str(e))
+    except (URLError, TimeoutError):
         messagebox.showerror("API Error", "तापमान मिळवताना त्रुटी आली. इंटरनेट/निवड तपासा आणि पुन्हा प्रयत्न करा.")
+
+
+def fetch_rainfall(silent=False):
+    try:
+        _, lat, lon = get_selected_location_coords()
+        url = (
+            "https://api.open-meteo.com/v1/forecast"
+            f"?latitude={lat}&longitude={lon}&daily=precipitation_sum&forecast_days=1&timezone=auto"
+        )
+        req = Request(url, headers={"User-Agent": "BE_PROJECT/1.0"})
+        with urlopen(req, timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        daily = payload.get("daily", {})
+        precipitation = daily.get("precipitation_sum", [None])[0]
+        if precipitation is None:
+            raise ValueError("Rainfall not found")
+
+        rainfall.set(float(precipitation))
+        result_label.config(text=f"{taluka.get()} साठी पर्जन्यमान भरले: {precipitation} mm", bg="#f1f8e9", fg="#1b5e20")
+    except ValueError as e:
+        if not silent:
+            messagebox.showwarning("Location Missing", str(e))
+    except (URLError, TimeoutError):
+        if not silent:
+            messagebox.showerror("API Error", "पर्जन्यमान मिळवताना त्रुटी आली. इंटरनेट/निवड तपासा आणि पुन्हा प्रयत्न करा.")
 
 # =========================
 # Predict function
@@ -629,8 +661,15 @@ ttk.Button(
     command=fetch_temperature
 ).grid(row=7, column=2, padx=(10, 0), sticky="ew")
 
+ttk.Button(
+    frame,
+    text="निवडलेल्या तालुक्याचे पर्जन्यमान भरा",
+    command=fetch_rainfall
+).grid(row=10, column=2, padx=(10, 0), sticky="ew")
+
 state_cb.bind("<<ComboboxSelected>>", update_districts)
 district_cb.bind("<<ComboboxSelected>>", update_talukas)
+taluka_cb.bind("<<ComboboxSelected>>", lambda _e: fetch_rainfall(silent=True))
 update_districts()
 
 # Button
