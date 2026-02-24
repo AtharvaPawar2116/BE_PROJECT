@@ -3,6 +3,8 @@ from tkinter import ttk, messagebox
 import pandas as pd
 import joblib
 import os, json
+from urllib.request import urlopen
+from urllib.error import URLError
 from datetime import datetime
 
 # =========================
@@ -195,6 +197,39 @@ SOIL_ENGLISH_MAP = {
     "डोंगराळ माती": "Mountain soil"
 }
 
+# राज्य → जिल्हा → तालुका (तापमानासाठी समन्वय बिंदू)
+LOCATION_TREE = {
+    "महाराष्ट्र": {
+        "पुणे": {
+            "हवेली": (18.5204, 73.8567),
+            "बारामती": (18.1516, 74.5777),
+            "जुन्नर": (19.2082, 73.8752)
+        },
+        "नाशिक": {
+            "नाशिक": (19.9975, 73.7898),
+            "येवला": (20.0426, 74.4898),
+            "सिन्नर": (19.8430, 73.9981)
+        },
+        "नागपूर": {
+            "नागपूर": (21.1458, 79.0882),
+            "काटोल": (21.2727, 78.5818),
+            "हिंगणा": (21.0285, 78.9760)
+        }
+    },
+    "गुजरात": {
+        "अहमदाबाद": {
+            "दस्क्रोई": (23.0225, 72.5714),
+            "धोलका": (22.7332, 72.4737)
+        }
+    },
+    "कर्नाटक": {
+        "बेंगळुरू शहरी": {
+            "बेंगळुरू उत्तर": (13.0827, 77.5877),
+            "बेंगळुरू दक्षिण": (12.9279, 77.6271)
+        }
+    }
+}
+
 # =========================
 # Soil Details + Steps (Report)
 # =========================
@@ -276,6 +311,8 @@ CROP_GUIDE = {
 # =========================
 def build_report(data_dict, crop_en, crop_mr):
     state_mr = state.get()
+    district_mr = district.get()
+    taluka_mr = taluka.get()
     soil_mr = soil_type.get()
     state_en = STATE_ENGLISH_MAP.get(state_mr, state_mr)
     soil_en = SOIL_ENGLISH_MAP.get(soil_mr, soil_mr)
@@ -303,6 +340,8 @@ Generated On: {now}
 INPUTS:
 - State (Marathi): {state_mr}
 - State (English): {state_en}
+- District: {district_mr}
+- Taluka: {taluka_mr}
 - Soil Type (Marathi): {soil_mr}
 - Soil Type (English): {soil_en}
 
@@ -361,6 +400,8 @@ style.configure("TButton", font=("Arial", 12, "bold"), padding=8)
 
 # Variables
 state = tk.StringVar()
+district = tk.StringVar()
+taluka = tk.StringVar()
 soil_type = tk.StringVar()
 n_soil = tk.DoubleVar()
 p_soil = tk.DoubleVar()
@@ -369,6 +410,56 @@ temperature = tk.DoubleVar()
 humidity = tk.DoubleVar()
 ph = tk.DoubleVar()
 rainfall = tk.DoubleVar()
+
+district_cb = None
+taluka_cb = None
+
+
+def update_districts(*_):
+    state_name = state.get()
+    districts = list(LOCATION_TREE.get(state_name, {}).keys())
+    if districts:
+        district_cb["values"] = districts
+        district.set(districts[0])
+        update_talukas()
+    else:
+        district_cb["values"] = ["जिल्हा उपलब्ध नाही"]
+        district.set("जिल्हा उपलब्ध नाही")
+        taluka_cb["values"] = ["तालुका उपलब्ध नाही"]
+        taluka.set("तालुका उपलब्ध नाही")
+
+
+def update_talukas(*_):
+    talukas = list(LOCATION_TREE.get(state.get(), {}).get(district.get(), {}).keys())
+    if talukas:
+        taluka_cb["values"] = talukas
+        taluka.set(talukas[0])
+    else:
+        taluka_cb["values"] = ["तालुका उपलब्ध नाही"]
+        taluka.set("तालुका उपलब्ध नाही")
+
+
+def fetch_temperature():
+    coords = LOCATION_TREE.get(state.get(), {}).get(district.get(), {}).get(taluka.get())
+    if not coords:
+        messagebox.showwarning("Location Missing", "या निवडीसाठी तापमान डेटा उपलब्ध नाही.")
+        return
+
+    lat, lon = coords
+    url = (
+        "https://api.open-meteo.com/v1/forecast"
+        f"?latitude={lat}&longitude={lon}&current=temperature_2m"
+    )
+    try:
+        with urlopen(url, timeout=8) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        current_temp = payload.get("current", {}).get("temperature_2m")
+        if current_temp is None:
+            raise ValueError("Temperature not found")
+        temperature.set(float(current_temp))
+        result_label.config(text=f"{taluka.get()} साठी तापमान भरले: {current_temp}°C", bg="#f1f8e9", fg="#1b5e20")
+    except (URLError, ValueError, TimeoutError):
+        messagebox.showerror("API Error", "तापमान मिळवताना त्रुटी आली. कृपया पुन्हा प्रयत्न करा.")
 
 # =========================
 # Predict function
@@ -381,8 +472,8 @@ def predict_crop():
     try:
         state_value = STATE_ENGLISH_MAP.get(state.get())
         soil_value = SOIL_ENGLISH_MAP.get(soil_type.get())
-        if not state_value or not soil_value:
-            raise ValueError("State/soil selection missing.")
+        if not state_value or not soil_value or district.get().endswith("उपलब्ध नाही") or taluka.get().endswith("उपलब्ध नाही"):
+            raise ValueError("State/district/taluka/soil selection missing.")
 
         data = {
             "STATE": [state_value],
@@ -396,7 +487,7 @@ def predict_crop():
             "RAINFALL": [float(rainfall.get())]
         }
     except Exception:
-        messagebox.showerror("Error", "कृपया सर्व value योग्य प्रकारे भरा (numbers) आणि राज्य/माती निवडा.")
+        messagebox.showerror("Error", "कृपया सर्व value योग्य प्रकारे भरा (numbers) आणि राज्य/जिल्हा/तालुका/माती निवडा.")
         return
 
     df = pd.DataFrame(data)
@@ -444,20 +535,33 @@ def add_combo(var, values, row):
     cb = ttk.Combobox(frame, textvariable=var, values=values, width=22, state="readonly")
     cb.grid(row=row, column=1, pady=7, sticky="ew")
     cb.current(0)
+    return cb
 
 frame.columnconfigure(1, weight=1)
 
 # Input Fields (Marathi)
-add_label("राज्य", 0); add_combo(state, state_marathi_list, 0)
-add_label("मातीचा प्रकार", 1); add_combo(soil_type, SOIL_MARATHI_LIST, 1)
+add_label("राज्य", 0); state_cb = add_combo(state, state_marathi_list, 0)
+add_label("जिल्हा", 1); district_cb = add_combo(district, ["जिल्हा निवडा"], 1)
+add_label("तालुका", 2); taluka_cb = add_combo(taluka, ["तालुका निवडा"], 2)
+add_label("मातीचा प्रकार", 3); add_combo(soil_type, SOIL_MARATHI_LIST, 3)
 
-add_label("नायट्रोजन (N)", 2); add_entry(n_soil, 2)
-add_label("फॉस्फरस (P)", 3); add_entry(p_soil, 3)
-add_label("पोटॅशियम (K)", 4); add_entry(k_soil, 4)
-add_label("तापमान (°C)", 5); add_entry(temperature, 5)
-add_label("आर्द्रता (%)", 6); add_entry(humidity, 6)
-add_label("मातीचा pH", 7); add_entry(ph, 7)
-add_label("पर्जन्यमान (मिमी)", 8); add_entry(rainfall, 8)
+add_label("नायट्रोजन (N)", 4); add_entry(n_soil, 4)
+add_label("फॉस्फरस (P)", 5); add_entry(p_soil, 5)
+add_label("पोटॅशियम (K)", 6); add_entry(k_soil, 6)
+add_label("तापमान (°C)", 7); add_entry(temperature, 7)
+add_label("आर्द्रता (%)", 8); add_entry(humidity, 8)
+add_label("मातीचा pH", 9); add_entry(ph, 9)
+add_label("पर्जन्यमान (मिमी)", 10); add_entry(rainfall, 10)
+
+ttk.Button(
+    frame,
+    text="निवडलेल्या तालुक्याचे तापमान भरा",
+    command=fetch_temperature
+).grid(row=7, column=2, padx=(10, 0), sticky="ew")
+
+state_cb.bind("<<ComboboxSelected>>", update_districts)
+district_cb.bind("<<ComboboxSelected>>", update_talukas)
+update_districts()
 
 # Button
 ttk.Button(
