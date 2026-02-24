@@ -3,8 +3,9 @@ from tkinter import ttk, messagebox
 import pandas as pd
 import joblib
 import os, json
-from urllib.request import urlopen
+from urllib.request import urlopen, Request
 from urllib.error import URLError
+from urllib.parse import quote
 from datetime import datetime
 
 # =========================
@@ -197,38 +198,31 @@ SOIL_ENGLISH_MAP = {
     "डोंगराळ माती": "Mountain soil"
 }
 
-# राज्य → जिल्हा → तालुका (तापमानासाठी समन्वय बिंदू)
-LOCATION_TREE = {
-    "महाराष्ट्र": {
-        "पुणे": {
-            "हवेली": (18.5204, 73.8567),
-            "बारामती": (18.1516, 74.5777),
-            "जुन्नर": (19.2082, 73.8752)
-        },
-        "नाशिक": {
-            "नाशिक": (19.9975, 73.7898),
-            "येवला": (20.0426, 74.4898),
-            "सिन्नर": (19.8430, 73.9981)
-        },
-        "नागपूर": {
-            "नागपूर": (21.1458, 79.0882),
-            "काटोल": (21.2727, 78.5818),
-            "हिंगणा": (21.0285, 78.9760)
-        }
-    },
-    "गुजरात": {
-        "अहमदाबाद": {
-            "दस्क्रोई": (23.0225, 72.5714),
-            "धोलका": (22.7332, 72.4737)
-        }
-    },
-    "कर्नाटक": {
-        "बेंगळुरू शहरी": {
-            "बेंगळुरू उत्तर": (13.0827, 77.5877),
-            "बेंगळुरू दक्षिण": (12.9279, 77.6271)
-        }
-    }
+# महाराष्ट्रातील सर्व जिल्हे (तालुके API मधून)
+MAHARASHTRA_DISTRICTS = [
+    "Ahmednagar", "Akola", "Amravati", "Beed", "Bhandara", "Buldhana", "Chandrapur",
+    "Chhatrapati Sambhajinagar", "Dhule", "Gadchiroli", "Gondia", "Hingoli", "Jalgaon",
+    "Jalna", "Kolhapur", "Latur", "Mumbai City", "Mumbai Suburban", "Nagpur", "Nanded",
+    "Nandurbar", "Nashik", "Osmanabad", "Palghar", "Parbhani", "Pune", "Raigad",
+    "Ratnagiri", "Sangli", "Satara", "Sindhudurg", "Solapur", "Thane", "Wardha",
+    "Washim", "Yavatmal"
+]
+
+DISTRICT_ENGLISH_MAP = {
+    "अहमदनगर": "Ahmednagar", "अकोला": "Akola", "अमरावती": "Amravati", "बीड": "Beed",
+    "भंडारा": "Bhandara", "बुलढाणा": "Buldhana", "चंद्रपूर": "Chandrapur",
+    "छत्रपती संभाजीनगर": "Chhatrapati Sambhajinagar", "धुळे": "Dhule", "गडचिरोली": "Gadchiroli",
+    "गोंदिया": "Gondia", "हिंगोली": "Hingoli", "जळगाव": "Jalgaon", "जालना": "Jalna",
+    "कोल्हापूर": "Kolhapur", "लातूर": "Latur", "मुंबई शहर": "Mumbai City",
+    "मुंबई उपनगर": "Mumbai Suburban", "नागपूर": "Nagpur", "नांदेड": "Nanded",
+    "नंदुरबार": "Nandurbar", "नाशिक": "Nashik", "उस्मानाबाद": "Osmanabad", "पालघर": "Palghar",
+    "परभणी": "Parbhani", "पुणे": "Pune", "रायगड": "Raigad", "रत्नागिरी": "Ratnagiri",
+    "सांगली": "Sangli", "सातारा": "Satara", "सिंधुदुर्ग": "Sindhudurg", "सोलापूर": "Solapur",
+    "ठाणे": "Thane", "वर्धा": "Wardha", "वाशीम": "Washim", "यवतमाळ": "Yavatmal"
 }
+
+DISTRICT_MARATHI_MAP = {v: k for k, v in DISTRICT_ENGLISH_MAP.items()}
+TALUKA_CACHE = {}
 
 # =========================
 # Soil Details + Steps (Report)
@@ -315,6 +309,7 @@ def build_report(data_dict, crop_en, crop_mr):
     taluka_mr = taluka.get()
     soil_mr = soil_type.get()
     state_en = STATE_ENGLISH_MAP.get(state_mr, state_mr)
+    district_en = DISTRICT_ENGLISH_MAP.get(district_mr, district_mr)
     soil_en = SOIL_ENGLISH_MAP.get(soil_mr, soil_mr)
 
     soil_info = SOIL_GUIDE.get(soil_en, {
@@ -340,7 +335,8 @@ Generated On: {now}
 INPUTS:
 - State (Marathi): {state_mr}
 - State (English): {state_en}
-- District: {district_mr}
+- District (Marathi): {district_mr}
+- District (English): {district_en}
 - Taluka: {taluka_mr}
 - Soil Type (Marathi): {soil_mr}
 - Soil Type (English): {soil_en}
@@ -415,43 +411,97 @@ district_cb = None
 taluka_cb = None
 
 
+def fetch_talukas_for_district(district_en):
+    if district_en in TALUKA_CACHE:
+        return TALUKA_CACHE[district_en]
+
+    query = f"""[out:json][timeout:25];
+area["name"="Maharashtra"]["boundary"="administrative"]["admin_level"="4"]->.state;
+rel(area.state)["name"="{district_en}"]["boundary"="administrative"]["admin_level"="6"]->.district;
+rel(r.district)["boundary"="administrative"]["admin_level"~"7|8"];
+out tags;"""
+    url = "https://overpass-api.de/api/interpreter?data=" + quote(query)
+    req = Request(url, headers={"User-Agent": "BE_PROJECT/1.0"})
+    with urlopen(req, timeout=20) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+
+    talukas = sorted({
+        el.get("tags", {}).get("name", "").strip()
+        for el in payload.get("elements", [])
+        if el.get("tags", {}).get("name")
+    })
+    TALUKA_CACHE[district_en] = talukas
+    return talukas
+
+
 def update_districts(*_):
-    state_name = state.get()
-    districts = list(LOCATION_TREE.get(state_name, {}).keys())
-    if districts:
-        district_cb["values"] = districts
-        district.set(districts[0])
+    if state.get() == "महाराष्ट्र":
+        district_values = [DISTRICT_MARATHI_MAP.get(d, d) for d in MAHARASHTRA_DISTRICTS]
+        district_cb["values"] = district_values
+        district.set(district_values[0])
         update_talukas()
-    else:
-        district_cb["values"] = ["जिल्हा उपलब्ध नाही"]
-        district.set("जिल्हा उपलब्ध नाही")
-        taluka_cb["values"] = ["तालुका उपलब्ध नाही"]
-        taluka.set("तालुका उपलब्ध नाही")
+        return
+
+    district_cb["values"] = ["जिल्हा उपलब्ध नाही"]
+    district.set("जिल्हा उपलब्ध नाही")
+    taluka_cb["values"] = ["तालुका उपलब्ध नाही"]
+    taluka.set("तालुका उपलब्ध नाही")
 
 
 def update_talukas(*_):
-    talukas = list(LOCATION_TREE.get(state.get(), {}).get(district.get(), {}).keys())
+    if state.get() != "महाराष्ट्र":
+        taluka_cb["values"] = ["तालुका उपलब्ध नाही"]
+        taluka.set("तालुका उपलब्ध नाही")
+        return
+
+    district_en = DISTRICT_ENGLISH_MAP.get(district.get())
+    if not district_en:
+        taluka_cb["values"] = ["तालुका उपलब्ध नाही"]
+        taluka.set("तालुका उपलब्ध नाही")
+        return
+
+    try:
+        talukas = fetch_talukas_for_district(district_en)
+    except Exception:
+        talukas = []
+
     if talukas:
         taluka_cb["values"] = talukas
         taluka.set(talukas[0])
     else:
-        taluka_cb["values"] = ["तालुका उपलब्ध नाही"]
-        taluka.set("तालुका उपलब्ध नाही")
+        taluka_cb["values"] = ["तालुका मिळाला नाही"]
+        taluka.set("तालुका मिळाला नाही")
+
+
+def geocode_taluka(taluka_name, district_en):
+    q = quote(f"{taluka_name}, {district_en}, Maharashtra, India")
+    url = f"https://nominatim.openstreetmap.org/search?q={q}&format=json&limit=1"
+    req = Request(url, headers={"User-Agent": "BE_PROJECT/1.0"})
+    with urlopen(req, timeout=15) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if not payload:
+        raise ValueError("Taluka location not found")
+    return float(payload[0]["lat"]), float(payload[0]["lon"])
 
 
 def fetch_temperature():
-    coords = LOCATION_TREE.get(state.get(), {}).get(district.get(), {}).get(taluka.get())
-    if not coords:
-        messagebox.showwarning("Location Missing", "या निवडीसाठी तापमान डेटा उपलब्ध नाही.")
+    if state.get() != "महाराष्ट्र":
+        messagebox.showwarning("Location Missing", "सध्या तापमान auto-fill फक्त महाराष्ट्रासाठी उपलब्ध आहे.")
         return
 
-    lat, lon = coords
-    url = (
-        "https://api.open-meteo.com/v1/forecast"
-        f"?latitude={lat}&longitude={lon}&current=temperature_2m"
-    )
+    district_en = DISTRICT_ENGLISH_MAP.get(district.get())
+    if not district_en or taluka.get().endswith("नाही"):
+        messagebox.showwarning("Location Missing", "कृपया वैध जिल्हा आणि तालुका निवडा.")
+        return
+
     try:
-        with urlopen(url, timeout=8) as response:
+        lat, lon = geocode_taluka(taluka.get(), district_en)
+        url = (
+            "https://api.open-meteo.com/v1/forecast"
+            f"?latitude={lat}&longitude={lon}&current=temperature_2m"
+        )
+        req = Request(url, headers={"User-Agent": "BE_PROJECT/1.0"})
+        with urlopen(req, timeout=10) as response:
             payload = json.loads(response.read().decode("utf-8"))
         current_temp = payload.get("current", {}).get("temperature_2m")
         if current_temp is None:
@@ -459,7 +509,7 @@ def fetch_temperature():
         temperature.set(float(current_temp))
         result_label.config(text=f"{taluka.get()} साठी तापमान भरले: {current_temp}°C", bg="#f1f8e9", fg="#1b5e20")
     except (URLError, ValueError, TimeoutError):
-        messagebox.showerror("API Error", "तापमान मिळवताना त्रुटी आली. कृपया पुन्हा प्रयत्न करा.")
+        messagebox.showerror("API Error", "तापमान मिळवताना त्रुटी आली. इंटरनेट/निवड तपासा आणि पुन्हा प्रयत्न करा.")
 
 # =========================
 # Predict function
@@ -472,7 +522,7 @@ def predict_crop():
     try:
         state_value = STATE_ENGLISH_MAP.get(state.get())
         soil_value = SOIL_ENGLISH_MAP.get(soil_type.get())
-        if not state_value or not soil_value or district.get().endswith("उपलब्ध नाही") or taluka.get().endswith("उपलब्ध नाही"):
+        if not state_value or not soil_value or district.get().endswith("उपलब्ध नाही") or taluka.get().endswith("नाही"):
             raise ValueError("State/district/taluka/soil selection missing.")
 
         data = {
