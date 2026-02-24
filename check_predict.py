@@ -263,6 +263,19 @@ MAHARASHTRA_TALUKAS = {
     "Yavatmal": ["Arni", "Babulgaon", "Darwha", "Digras", "Ghatanji", "Kalamb", "Kelapur", "Mahagaon", "Maregaon", "Ner", "Pusad", "Ralegaon", "Umarkhed", "Wani", "Yavatmal", "Zari Jamani"]
 }
 
+
+# वार्षिक सरासरी पर्जन्यमान (mm) - जिल्हानुसार अंदाजित मूल्ये
+MAHARASHTRA_ANNUAL_RAINFALL_MM = {
+    "Ahmednagar": 575, "Akola": 900, "Amravati": 950, "Beed": 700, "Bhandara": 1300,
+    "Buldhana": 850, "Chandrapur": 1200, "Chhatrapati Sambhajinagar": 730, "Dhule": 680,
+    "Gadchiroli": 1450, "Gondia": 1350, "Hingoli": 820, "Jalgaon": 720, "Jalna": 700,
+    "Kolhapur": 1750, "Latur": 780, "Mumbai City": 2400, "Mumbai Suburban": 2300,
+    "Nagpur": 1100, "Nanded": 930, "Nandurbar": 900, "Nashik": 1000, "Osmanabad": 760,
+    "Palghar": 2200, "Parbhani": 820, "Pune": 850, "Raigad": 3200, "Ratnagiri": 3200,
+    "Sangli": 650, "Satara": 1050, "Sindhudurg": 3000, "Solapur": 560, "Thane": 2100,
+    "Wardha": 1050, "Washim": 880, "Yavatmal": 980
+}
+
 # =========================
 # Soil Details + Steps (Report)
 # =========================
@@ -540,28 +553,20 @@ def fetch_temperature():
 
 def fetch_rainfall(silent=False):
     try:
-        _, lat, lon = get_selected_location_coords()
-        url = (
-            "https://api.open-meteo.com/v1/forecast"
-            f"?latitude={lat}&longitude={lon}&daily=precipitation_sum&forecast_days=1&timezone=auto"
+        district_en, _, _ = get_selected_location_coords()
+        annual_rainfall = MAHARASHTRA_ANNUAL_RAINFALL_MM.get(district_en)
+        if annual_rainfall is None:
+            raise ValueError("Annual rainfall not found")
+
+        rainfall.set(float(annual_rainfall))
+        result_label.config(
+            text=f"{taluka.get()} ({district.get()}) साठी वार्षिक सरासरी पर्जन्यमान: {annual_rainfall} mm",
+            bg="#f1f8e9",
+            fg="#1b5e20"
         )
-        req = Request(url, headers={"User-Agent": "BE_PROJECT/1.0"})
-        with urlopen(req, timeout=10) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-
-        daily = payload.get("daily", {})
-        precipitation = daily.get("precipitation_sum", [None])[0]
-        if precipitation is None:
-            raise ValueError("Rainfall not found")
-
-        rainfall.set(float(precipitation))
-        result_label.config(text=f"{taluka.get()} साठी पर्जन्यमान भरले: {precipitation} mm", bg="#f1f8e9", fg="#1b5e20")
     except ValueError as e:
         if not silent:
             messagebox.showwarning("Location Missing", str(e))
-    except (URLError, TimeoutError):
-        if not silent:
-            messagebox.showerror("API Error", "पर्जन्यमान मिळवताना त्रुटी आली. इंटरनेट/निवड तपासा आणि पुन्हा प्रयत्न करा.")
 
 # =========================
 # Predict function
@@ -663,7 +668,7 @@ ttk.Button(
 
 ttk.Button(
     frame,
-    text="निवडलेल्या तालुक्याचे पर्जन्यमान भरा",
+    text="वार्षिक सरासरी पर्जन्यमान भरा",
     command=fetch_rainfall
 ).grid(row=10, column=2, padx=(10, 0), sticky="ew")
 
