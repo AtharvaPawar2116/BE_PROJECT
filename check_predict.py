@@ -3,13 +3,22 @@ from tkinter import ttk, messagebox
 import pandas as pd
 import joblib
 import os, json
+from urllib.request import urlopen, Request
+from urllib.error import URLError
+from urllib.parse import quote
 from datetime import datetime
 
 # =========================
 # MODEL LOAD
 # =========================
 MODEL_PATH = "model_outputs/crop_recommendation_model.pkl"
-model = joblib.load(MODEL_PATH)
+try:
+    model = joblib.load(MODEL_PATH)
+except Exception as e:
+    model = None
+    MODEL_LOAD_ERROR = str(e)
+else:
+    MODEL_LOAD_ERROR = ""
 
 # =========================
 # JSON FILE (Crop Map)
@@ -189,6 +198,32 @@ SOIL_ENGLISH_MAP = {
     "डोंगराळ माती": "Mountain soil"
 }
 
+# महाराष्ट्रातील सर्व जिल्हे (तालुके API मधून)
+MAHARASHTRA_DISTRICTS = [
+    "Ahmednagar", "Akola", "Amravati", "Beed", "Bhandara", "Buldhana", "Chandrapur",
+    "Chhatrapati Sambhajinagar", "Dhule", "Gadchiroli", "Gondia", "Hingoli", "Jalgaon",
+    "Jalna", "Kolhapur", "Latur", "Mumbai City", "Mumbai Suburban", "Nagpur", "Nanded",
+    "Nandurbar", "Nashik", "Osmanabad", "Palghar", "Parbhani", "Pune", "Raigad",
+    "Ratnagiri", "Sangli", "Satara", "Sindhudurg", "Solapur", "Thane", "Wardha",
+    "Washim", "Yavatmal"
+]
+
+DISTRICT_ENGLISH_MAP = {
+    "अहमदनगर": "Ahmednagar", "अकोला": "Akola", "अमरावती": "Amravati", "बीड": "Beed",
+    "भंडारा": "Bhandara", "बुलढाणा": "Buldhana", "चंद्रपूर": "Chandrapur",
+    "छत्रपती संभाजीनगर": "Chhatrapati Sambhajinagar", "धुळे": "Dhule", "गडचिरोली": "Gadchiroli",
+    "गोंदिया": "Gondia", "हिंगोली": "Hingoli", "जळगाव": "Jalgaon", "जालना": "Jalna",
+    "कोल्हापूर": "Kolhapur", "लातूर": "Latur", "मुंबई शहर": "Mumbai City",
+    "मुंबई उपनगर": "Mumbai Suburban", "नागपूर": "Nagpur", "नांदेड": "Nanded",
+    "नंदुरबार": "Nandurbar", "नाशिक": "Nashik", "उस्मानाबाद": "Osmanabad", "पालघर": "Palghar",
+    "परभणी": "Parbhani", "पुणे": "Pune", "रायगड": "Raigad", "रत्नागिरी": "Ratnagiri",
+    "सांगली": "Sangli", "सातारा": "Satara", "सिंधुदुर्ग": "Sindhudurg", "सोलापूर": "Solapur",
+    "ठाणे": "Thane", "वर्धा": "Wardha", "वाशीम": "Washim", "यवतमाळ": "Yavatmal"
+}
+
+DISTRICT_MARATHI_MAP = {v: k for k, v in DISTRICT_ENGLISH_MAP.items()}
+TALUKA_CACHE = {}
+
 # =========================
 # Soil Details + Steps (Report)
 # =========================
@@ -270,8 +305,11 @@ CROP_GUIDE = {
 # =========================
 def build_report(data_dict, crop_en, crop_mr):
     state_mr = state.get()
+    district_mr = district.get()
+    taluka_mr = taluka.get()
     soil_mr = soil_type.get()
     state_en = STATE_ENGLISH_MAP.get(state_mr, state_mr)
+    district_en = DISTRICT_ENGLISH_MAP.get(district_mr, district_mr)
     soil_en = SOIL_ENGLISH_MAP.get(soil_mr, soil_mr)
 
     soil_info = SOIL_GUIDE.get(soil_en, {
@@ -297,6 +335,9 @@ Generated On: {now}
 INPUTS:
 - State (Marathi): {state_mr}
 - State (English): {state_en}
+- District (Marathi): {district_mr}
+- District (English): {district_en}
+- Taluka: {taluka_mr}
 - Soil Type (Marathi): {soil_mr}
 - Soil Type (English): {soil_en}
 
@@ -341,11 +382,22 @@ def save_report(report_text, crop_en):
 # =========================
 root = tk.Tk()
 root.title("पीक शिफारस प्रणाली")
-root.geometry("900x600")
-root.configure(bg="#2e7d32")
+root.geometry("980x670")
+root.minsize(920, 620)
+root.configure(bg="#f1f8e9")
+
+style = ttk.Style()
+style.theme_use("clam")
+style.configure("Card.TFrame", background="#ffffff")
+style.configure("Title.TLabel", background="#f1f8e9", foreground="#1b5e20", font=("Arial", 22, "bold"))
+style.configure("SubTitle.TLabel", background="#f1f8e9", foreground="#33691e", font=("Arial", 11))
+style.configure("FormLabel.TLabel", background="#ffffff", foreground="#1b5e20", font=("Arial", 11, "bold"))
+style.configure("TButton", font=("Arial", 12, "bold"), padding=8)
 
 # Variables
 state = tk.StringVar()
+district = tk.StringVar()
+taluka = tk.StringVar()
 soil_type = tk.StringVar()
 n_soil = tk.DoubleVar()
 p_soil = tk.DoubleVar()
@@ -355,14 +407,127 @@ humidity = tk.DoubleVar()
 ph = tk.DoubleVar()
 rainfall = tk.DoubleVar()
 
+district_cb = None
+taluka_cb = None
+
+
+def fetch_talukas_for_district(district_en):
+    if district_en in TALUKA_CACHE:
+        return TALUKA_CACHE[district_en]
+
+    query = f"""[out:json][timeout:25];
+area["name"="Maharashtra"]["boundary"="administrative"]["admin_level"="4"]->.state;
+rel(area.state)["name"="{district_en}"]["boundary"="administrative"]["admin_level"="6"]->.district;
+rel(r.district)["boundary"="administrative"]["admin_level"~"7|8"];
+out tags;"""
+    url = "https://overpass-api.de/api/interpreter?data=" + quote(query)
+    req = Request(url, headers={"User-Agent": "BE_PROJECT/1.0"})
+    with urlopen(req, timeout=20) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+
+    talukas = sorted({
+        el.get("tags", {}).get("name", "").strip()
+        for el in payload.get("elements", [])
+        if el.get("tags", {}).get("name")
+    })
+    TALUKA_CACHE[district_en] = talukas
+    return talukas
+
+
+def update_districts(*_):
+    if state.get() == "महाराष्ट्र":
+        district_values = [DISTRICT_MARATHI_MAP.get(d, d) for d in MAHARASHTRA_DISTRICTS]
+        district_cb["values"] = district_values
+        district.set(district_values[0])
+        update_talukas()
+        return
+
+    district_cb["values"] = ["जिल्हा उपलब्ध नाही"]
+    district.set("जिल्हा उपलब्ध नाही")
+    taluka_cb["values"] = ["तालुका उपलब्ध नाही"]
+    taluka.set("तालुका उपलब्ध नाही")
+
+
+def update_talukas(*_):
+    if state.get() != "महाराष्ट्र":
+        taluka_cb["values"] = ["तालुका उपलब्ध नाही"]
+        taluka.set("तालुका उपलब्ध नाही")
+        return
+
+    district_en = DISTRICT_ENGLISH_MAP.get(district.get())
+    if not district_en:
+        taluka_cb["values"] = ["तालुका उपलब्ध नाही"]
+        taluka.set("तालुका उपलब्ध नाही")
+        return
+
+    try:
+        talukas = fetch_talukas_for_district(district_en)
+    except Exception:
+        talukas = []
+
+    if talukas:
+        taluka_cb["values"] = talukas
+        taluka.set(talukas[0])
+    else:
+        taluka_cb["values"] = ["तालुका मिळाला नाही"]
+        taluka.set("तालुका मिळाला नाही")
+
+
+def geocode_taluka(taluka_name, district_en):
+    q = quote(f"{taluka_name}, {district_en}, Maharashtra, India")
+    url = f"https://nominatim.openstreetmap.org/search?q={q}&format=json&limit=1"
+    req = Request(url, headers={"User-Agent": "BE_PROJECT/1.0"})
+    with urlopen(req, timeout=15) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if not payload:
+        raise ValueError("Taluka location not found")
+    return float(payload[0]["lat"]), float(payload[0]["lon"])
+
+
+def fetch_temperature():
+    if state.get() != "महाराष्ट्र":
+        messagebox.showwarning("Location Missing", "सध्या तापमान auto-fill फक्त महाराष्ट्रासाठी उपलब्ध आहे.")
+        return
+
+    district_en = DISTRICT_ENGLISH_MAP.get(district.get())
+    if not district_en or taluka.get().endswith("नाही"):
+        messagebox.showwarning("Location Missing", "कृपया वैध जिल्हा आणि तालुका निवडा.")
+        return
+
+    try:
+        lat, lon = geocode_taluka(taluka.get(), district_en)
+        url = (
+            "https://api.open-meteo.com/v1/forecast"
+            f"?latitude={lat}&longitude={lon}&current=temperature_2m"
+        )
+        req = Request(url, headers={"User-Agent": "BE_PROJECT/1.0"})
+        with urlopen(req, timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        current_temp = payload.get("current", {}).get("temperature_2m")
+        if current_temp is None:
+            raise ValueError("Temperature not found")
+        temperature.set(float(current_temp))
+        result_label.config(text=f"{taluka.get()} साठी तापमान भरले: {current_temp}°C", bg="#f1f8e9", fg="#1b5e20")
+    except (URLError, ValueError, TimeoutError):
+        messagebox.showerror("API Error", "तापमान मिळवताना त्रुटी आली. इंटरनेट/निवड तपासा आणि पुन्हा प्रयत्न करा.")
+
 # =========================
 # Predict function
 # =========================
 def predict_crop():
+    if model is None:
+        messagebox.showerror("Model Error", f"Model load failed:\n{MODEL_LOAD_ERROR}")
+        return
+
     try:
+        state_value = STATE_ENGLISH_MAP.get(state.get())
+        soil_value = SOIL_ENGLISH_MAP.get(soil_type.get())
+        if not state_value or not soil_value or district.get().endswith("उपलब्ध नाही") or taluka.get().endswith("नाही"):
+            raise ValueError("State/district/taluka/soil selection missing.")
+
         data = {
-            "STATE": [STATE_ENGLISH_MAP[state.get()]],
-            "SOIL_TYPE": [SOIL_ENGLISH_MAP[soil_type.get()]],
+            "STATE": [state_value],
+            "SOIL_TYPE": [soil_value],
             "N_SOIL": [float(n_soil.get())],
             "P_SOIL": [float(p_soil.get())],
             "K_SOIL": [float(k_soil.get())],
@@ -372,7 +537,7 @@ def predict_crop():
             "RAINFALL": [float(rainfall.get())]
         }
     except Exception:
-        messagebox.showerror("Error", "कृपया सर्व value योग्य प्रकारे भरा (numbers).")
+        messagebox.showerror("Error", "कृपया सर्व value योग्य प्रकारे भरा (numbers) आणि राज्य/जिल्हा/तालुका/माती निवडा.")
         return
 
     df = pd.DataFrame(data)
@@ -399,67 +564,77 @@ def predict_crop():
 # =========================
 # Frame
 # =========================
-frame = tk.LabelFrame(
-    root,
-    text="माती व हवामान माहिती भरा",
-    font=("Arial", 16, "bold"),
-    bg="#2e7d32",
-    fg="white",
-    padx=20,
-    pady=20
-)
-frame.pack(pady=20)
+ttk.Label(root, text="🌱 पीक शिफारस प्रणाली", style="Title.TLabel").pack(pady=(18, 4))
+ttk.Label(root, text="माती व हवामान आधारित स्मार्ट शिफारस आणि रिपोर्ट जनरेशन", style="SubTitle.TLabel").pack(pady=(0, 14))
+
+frame = ttk.Frame(root, style="Card.TFrame", padding=20)
+frame.pack(padx=20, pady=10, fill="x")
 
 # Helper Functions
 def add_label(text, row):
-    tk.Label(
+    ttk.Label(
         frame,
         text=text,
-        bg="#2e7d32",
-        fg="white",
-        font=("Arial", 12)
-    ).grid(row=row, column=0, pady=5, sticky="w")
+        style="FormLabel.TLabel"
+    ).grid(row=row, column=0, padx=(4, 20), pady=7, sticky="w")
 
 def add_entry(var, row):
-    tk.Entry(frame, textvariable=var, width=20).grid(row=row, column=1, pady=5)
+    ttk.Entry(frame, textvariable=var, width=24).grid(row=row, column=1, pady=7, sticky="ew")
 
 def add_combo(var, values, row):
-    cb = ttk.Combobox(frame, textvariable=var, values=values, width=18, state="readonly")
-    cb.grid(row=row, column=1, pady=5)
+    cb = ttk.Combobox(frame, textvariable=var, values=values, width=22, state="readonly")
+    cb.grid(row=row, column=1, pady=7, sticky="ew")
     cb.current(0)
+    return cb
+
+frame.columnconfigure(1, weight=1)
 
 # Input Fields (Marathi)
-add_label("राज्य", 0); add_combo(state, state_marathi_list, 0)
-add_label("मातीचा प्रकार", 1); add_combo(soil_type, SOIL_MARATHI_LIST, 1)
+add_label("राज्य", 0); state_cb = add_combo(state, state_marathi_list, 0)
+add_label("जिल्हा", 1); district_cb = add_combo(district, ["जिल्हा निवडा"], 1)
+add_label("तालुका", 2); taluka_cb = add_combo(taluka, ["तालुका निवडा"], 2)
+add_label("मातीचा प्रकार", 3); add_combo(soil_type, SOIL_MARATHI_LIST, 3)
 
-add_label("नायट्रोजन (N)", 2); add_entry(n_soil, 2)
-add_label("फॉस्फरस (P)", 3); add_entry(p_soil, 3)
-add_label("पोटॅशियम (K)", 4); add_entry(k_soil, 4)
-add_label("तापमान (°C)", 5); add_entry(temperature, 5)
-add_label("आर्द्रता (%)", 6); add_entry(humidity, 6)
-add_label("मातीचा pH", 7); add_entry(ph, 7)
-add_label("पर्जन्यमान (मिमी)", 8); add_entry(rainfall, 8)
+add_label("नायट्रोजन (N)", 4); add_entry(n_soil, 4)
+add_label("फॉस्फरस (P)", 5); add_entry(p_soil, 5)
+add_label("पोटॅशियम (K)", 6); add_entry(k_soil, 6)
+add_label("तापमान (°C)", 7); add_entry(temperature, 7)
+add_label("आर्द्रता (%)", 8); add_entry(humidity, 8)
+add_label("मातीचा pH", 9); add_entry(ph, 9)
+add_label("पर्जन्यमान (मिमी)", 10); add_entry(rainfall, 10)
+
+ttk.Button(
+    frame,
+    text="निवडलेल्या तालुक्याचे तापमान भरा",
+    command=fetch_temperature
+).grid(row=7, column=2, padx=(10, 0), sticky="ew")
+
+state_cb.bind("<<ComboboxSelected>>", update_districts)
+district_cb.bind("<<ComboboxSelected>>", update_talukas)
+update_districts()
 
 # Button
-tk.Button(
+ttk.Button(
     root,
     text="पीक शिफारस करा + रिपोर्ट तयार करा",
-    command=predict_crop,
-    font=("Arial", 14, "bold"),
-    bg="#ff9800",
-    fg="black",
-    width=28
-).pack(pady=20)
+    command=predict_crop
+).pack(pady=16)
 
 # Result Label
 result_label = tk.Label(
     root,
-    text="",
+    text="शिफारसीसाठी वरची माहिती भरा.",
     font=("Arial", 15, "bold"),
-    bg="#2e7d32",
-    fg="white",
-    pady=20
+    bg="#f1f8e9",
+    fg="#1b5e20",
+    pady=18
 )
-result_label.pack()
+result_label.pack(fill="x", padx=14)
+
+if model is None:
+    result_label.config(
+        text="⚠️ मॉडेल लोड झाले नाही. कृपया model_outputs फोल्डर तपासा.",
+        fg="#b71c1c"
+    )
 
 root.mainloop()
