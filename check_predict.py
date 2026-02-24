@@ -9,7 +9,13 @@ from datetime import datetime
 # MODEL LOAD
 # =========================
 MODEL_PATH = "model_outputs/crop_recommendation_model.pkl"
-model = joblib.load(MODEL_PATH)
+try:
+    model = joblib.load(MODEL_PATH)
+except Exception as e:
+    model = None
+    MODEL_LOAD_ERROR = str(e)
+else:
+    MODEL_LOAD_ERROR = ""
 
 # =========================
 # JSON FILE (Crop Map)
@@ -341,8 +347,17 @@ def save_report(report_text, crop_en):
 # =========================
 root = tk.Tk()
 root.title("पीक शिफारस प्रणाली")
-root.geometry("900x600")
-root.configure(bg="#2e7d32")
+root.geometry("980x670")
+root.minsize(920, 620)
+root.configure(bg="#f1f8e9")
+
+style = ttk.Style()
+style.theme_use("clam")
+style.configure("Card.TFrame", background="#ffffff")
+style.configure("Title.TLabel", background="#f1f8e9", foreground="#1b5e20", font=("Arial", 22, "bold"))
+style.configure("SubTitle.TLabel", background="#f1f8e9", foreground="#33691e", font=("Arial", 11))
+style.configure("FormLabel.TLabel", background="#ffffff", foreground="#1b5e20", font=("Arial", 11, "bold"))
+style.configure("TButton", font=("Arial", 12, "bold"), padding=8)
 
 # Variables
 state = tk.StringVar()
@@ -359,10 +374,19 @@ rainfall = tk.DoubleVar()
 # Predict function
 # =========================
 def predict_crop():
+    if model is None:
+        messagebox.showerror("Model Error", f"Model load failed:\n{MODEL_LOAD_ERROR}")
+        return
+
     try:
+        state_value = STATE_ENGLISH_MAP.get(state.get())
+        soil_value = SOIL_ENGLISH_MAP.get(soil_type.get())
+        if not state_value or not soil_value:
+            raise ValueError("State/soil selection missing.")
+
         data = {
-            "STATE": [STATE_ENGLISH_MAP[state.get()]],
-            "SOIL_TYPE": [SOIL_ENGLISH_MAP[soil_type.get()]],
+            "STATE": [state_value],
+            "SOIL_TYPE": [soil_value],
             "N_SOIL": [float(n_soil.get())],
             "P_SOIL": [float(p_soil.get())],
             "K_SOIL": [float(k_soil.get())],
@@ -372,7 +396,7 @@ def predict_crop():
             "RAINFALL": [float(rainfall.get())]
         }
     except Exception:
-        messagebox.showerror("Error", "कृपया सर्व value योग्य प्रकारे भरा (numbers).")
+        messagebox.showerror("Error", "कृपया सर्व value योग्य प्रकारे भरा (numbers) आणि राज्य/माती निवडा.")
         return
 
     df = pd.DataFrame(data)
@@ -399,34 +423,29 @@ def predict_crop():
 # =========================
 # Frame
 # =========================
-frame = tk.LabelFrame(
-    root,
-    text="माती व हवामान माहिती भरा",
-    font=("Arial", 16, "bold"),
-    bg="#2e7d32",
-    fg="white",
-    padx=20,
-    pady=20
-)
-frame.pack(pady=20)
+ttk.Label(root, text="🌱 पीक शिफारस प्रणाली", style="Title.TLabel").pack(pady=(18, 4))
+ttk.Label(root, text="माती व हवामान आधारित स्मार्ट शिफारस आणि रिपोर्ट जनरेशन", style="SubTitle.TLabel").pack(pady=(0, 14))
+
+frame = ttk.Frame(root, style="Card.TFrame", padding=20)
+frame.pack(padx=20, pady=10, fill="x")
 
 # Helper Functions
 def add_label(text, row):
-    tk.Label(
+    ttk.Label(
         frame,
         text=text,
-        bg="#2e7d32",
-        fg="white",
-        font=("Arial", 12)
-    ).grid(row=row, column=0, pady=5, sticky="w")
+        style="FormLabel.TLabel"
+    ).grid(row=row, column=0, padx=(4, 20), pady=7, sticky="w")
 
 def add_entry(var, row):
-    tk.Entry(frame, textvariable=var, width=20).grid(row=row, column=1, pady=5)
+    ttk.Entry(frame, textvariable=var, width=24).grid(row=row, column=1, pady=7, sticky="ew")
 
 def add_combo(var, values, row):
-    cb = ttk.Combobox(frame, textvariable=var, values=values, width=18, state="readonly")
-    cb.grid(row=row, column=1, pady=5)
+    cb = ttk.Combobox(frame, textvariable=var, values=values, width=22, state="readonly")
+    cb.grid(row=row, column=1, pady=7, sticky="ew")
     cb.current(0)
+
+frame.columnconfigure(1, weight=1)
 
 # Input Fields (Marathi)
 add_label("राज्य", 0); add_combo(state, state_marathi_list, 0)
@@ -441,25 +460,27 @@ add_label("मातीचा pH", 7); add_entry(ph, 7)
 add_label("पर्जन्यमान (मिमी)", 8); add_entry(rainfall, 8)
 
 # Button
-tk.Button(
+ttk.Button(
     root,
     text="पीक शिफारस करा + रिपोर्ट तयार करा",
-    command=predict_crop,
-    font=("Arial", 14, "bold"),
-    bg="#ff9800",
-    fg="black",
-    width=28
-).pack(pady=20)
+    command=predict_crop
+).pack(pady=16)
 
 # Result Label
 result_label = tk.Label(
     root,
-    text="",
+    text="शिफारसीसाठी वरची माहिती भरा.",
     font=("Arial", 15, "bold"),
-    bg="#2e7d32",
-    fg="white",
-    pady=20
+    bg="#f1f8e9",
+    fg="#1b5e20",
+    pady=18
 )
-result_label.pack()
+result_label.pack(fill="x", padx=14)
+
+if model is None:
+    result_label.config(
+        text="⚠️ मॉडेल लोड झाले नाही. कृपया model_outputs फोल्डर तपासा.",
+        fg="#b71c1c"
+    )
 
 root.mainloop()
